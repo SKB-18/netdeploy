@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netdeploy-config
+  namespace: netdeploy
+  labels:
+    app.kubernetes.io/name: netdeploy
+    app.kubernetes.io/component: config
+data:
+  # API settings
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  ALLOWED_ORIGINS: "https://netdeploy.example.com"
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_REQUESTS: "100"
+  RATE_LIMIT_WINDOW: "60"
+
+  # Celery settings
+  CELERY_CONCURRENCY: "4"
+  CELERY_MAX_RETRIES: "3"
+
+  # SSH settings
+  SSH_CONNECT_TIMEOUT: "30"
+  SSH_COMMAND_TIMEOUT: "60"
+  SSH_AUTH_TIMEOUT: "20"
+
+  # Snapshot settings
+  SNAPSHOT_RETENTION_DAYS: "90"
+  GIT_REPO_PATH: "/data/netdeploy-configs"

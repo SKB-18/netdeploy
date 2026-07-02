@@ -32,10 +32,10 @@ class TestCreateDevice:
         assert body["hostname"] == DEVICE_PAYLOAD["hostname"]
         assert "id" in body
 
-    def test_create_duplicate_hostname_returns_400(self, client):
+    def test_create_duplicate_hostname_returns_409(self, client):
         client.post("/api/devices/", json=DEVICE_PAYLOAD)
         r2 = client.post("/api/devices/", json=DEVICE_PAYLOAD)
-        assert r2.status_code == 400
+        assert r2.status_code == 409
         assert "already exists" in r2.json()["detail"].lower()
 
     def test_create_invalid_device_type_returns_422(self, client):

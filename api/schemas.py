@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, root_validator
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +68,24 @@ class DeviceHealthResponse(BaseModel):
 
 class ConfigRequest(BaseModel):
     device_id: UUID
-    desired_state: Dict[str, Any] = Field(..., description="BGP/OSPF config object")
+    # Callers may pass desired_state directly OR bgp/ospf as top-level keys;
+    # the root validator merges the latter into desired_state.
+    desired_state: Optional[Dict[str, Any]] = Field(None, description="BGP/OSPF config object")
+    bgp: Optional[Dict[str, Any]] = None
+    ospf: Optional[Dict[str, Any]] = None
     description: str = Field(default="Configuration update", max_length=500)
     created_by: str = Field(default="system")
+
+    @root_validator(pre=False)
+    def _coerce_desired_state(cls, values):
+        if not values.get("desired_state"):
+            state: Dict[str, Any] = {}
+            if values.get("bgp"):
+                state["bgp"] = values["bgp"]
+            if values.get("ospf"):
+                state["ospf"] = values["ospf"]
+            values["desired_state"] = state
+        return values
 
 
 class ConfigResponse(BaseModel):

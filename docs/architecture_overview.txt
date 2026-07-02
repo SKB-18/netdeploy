@@ -1,0 +1,54 @@
+
+NetDeploy — Architecture Overview
+==================================
+
+  [Network Engineers / CI-CD]
+           │
+           ▼
+    [nginx-ingress]  ← TLS termination, rate limiting
+           │
+     ┌─────┴──────┐
+     ▼             ▼
+ [FastAPI API]  [Streamlit Dashboard]
+   :8000           :8501
+     │
+     ├──[queue tasks]──► [Celery Workers]
+     │                        │
+     │                        ├──[SSH/Netmiko]──► spine-01 (Cisco XR)
+     │                        ├──[SSH/Netmiko]──► spine-02 (Cisco XR)
+     │                        ├──[SSH/Netmiko]──► leaf-01  (JunOS)
+     │                        ├──[SSH/Netmiko]──► leaf-02  (JunOS)
+     │                        └──[SSH/Netmiko]──► border-01 (Arista EOS)
+     │
+     ├──[read/write]──► [PostgreSQL]
+     │                   devices, configs
+     │                   deployments, audit
+     │
+     ├──[cache/broker]─► [Redis]
+     │
+     └──[metrics]──────► [Prometheus] ──► [Grafana]
+
+
+NetDeploy — Deployment State Machine
+======================================
+
+  QUEUED
+    │
+    ▼
+  IN_PROGRESS ──────────────────┐
+    │                           │ SSH error
+    │ [Validate config]         │
+    │ [Snapshot BEFORE]         │
+    │ [Build commands]          ▼
+    │ [Push via SSH]         FAILED
+    │ [Snapshot AFTER]
+    │ [Verify state]
+    │
+    ├──[verify pass]──► SUCCESS
+    │
+    └──[verify fail]──► ROLLBACK
+                         │
+                         ▼
+                    [Restore BEFORE snapshot]
+                    [Push rollback commands]
+                    [Verify rollback state]

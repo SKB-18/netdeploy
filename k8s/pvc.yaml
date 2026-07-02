@@ -1,0 +1,35 @@
+---
+# Persistent volume for the Git config repository (shared between API + Celery pods)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netdeploy-git-pvc
+  namespace: netdeploy
+  labels:
+    app.kubernetes.io/name: netdeploy
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteMany    # shared across API replicas — requires NFS or similar
+  storageClassName: nfs-client   # REPLACE with your StorageClass
+  resources:
+    requests:
+      storage: 10Gi
+---
+# PostgreSQL data volume (statefulset uses volumeClaimTemplates instead,
+# but this PVC is used if running postgres as a Deployment)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netdeploy-postgres-pvc
+  namespace: netdeploy
+  labels:
+    app.kubernetes.io/name: netdeploy
+    app.kubernetes.io/component: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd   # REPLACE with your StorageClass
+  resources:
+    requests:
+      storage: 50Gi

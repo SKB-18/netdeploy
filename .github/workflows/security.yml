@@ -1,0 +1,197 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    # Run weekly on Monday at 6am UTC
+    - cron: '0 6 * * 1'
+
+jobs:
+  # ── Static analysis with Bandit ────────────────────────────────────────────
+  bandit:
+    name: Bandit SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit
+        run: |
+          bandit -r . \
+            --exclude ./.git,./tests,./venv,./node_modules \
+            --config .bandit \
+            --format json \
+            --output bandit-report.json \
+            --severity-level medium \
+            --confidence-level medium
+        continue-on-error: true
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+      - name: Fail on HIGH severity findings
+        run: |
+          python -c "
+          import json, sys
+          with open('bandit-report.json') as f:
+              report = json.load(f)
+          high = [r for r in report.get('results', []) if r['issue_severity'] == 'HIGH']
+          if high:
+              print(f'HIGH severity issues found: {len(high)}')
+              for r in high:
+                  print(f'  {r[\"filename\"]}:{r[\"line_number\"]} — {r[\"issue_text\"]}')
+              sys.exit(1)
+          print('No HIGH severity issues.')
+          "
+
+  # ── Dependency vulnerability scan with Safety ─────────────────────────────
+  safety:
+    name: Safety Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Safety
+        run: pip install safety
+
+      - name: Run Safety check
+        run: |
+          pip install -r requirements.txt
+          safety check --full-report --output json > safety-report.json || true
+
+      - name: Upload Safety report
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-report
+          path: safety-report.json
+
+      - name: Fail on critical vulnerabilities
+        run: |
+          python -c "
+          import json, sys
+          try:
+              with open('safety-report.json') as f:
+                  report = json.load(f)
+              vulns = report.get('vulnerabilities', [])
+              critical = [v for v in vulns if v.get('severity') in ('critical', 'high')]
+              if critical:
+                  print(f'Critical/High CVEs found: {len(critical)}')
+                  for v in critical:
+                      print(f'  {v.get(\"package_name\")} {v.get(\"analyzed_version\")} — {v.get(\"vulnerability_id\")}')
+                  sys.exit(1)
+          except Exception as e:
+              print(f'Could not parse safety report: {e}')
+          print('No critical vulnerabilities found.')
+          "
+
+  # ── Container image scan with Trivy ──────────────────────────────────────
+  trivy:
+    name: Trivy Container Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image for scanning
+        run: docker build -t netdeploy-scan:latest .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'netdeploy-scan:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ── Security header tests ──────────────────────────────────────────────────
+  security-tests:
+    name: Security Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: netdeploy_test
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run security tests
+        env:
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/netdeploy_test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: test-secret-key-not-for-production
+          ENVIRONMENT: test
+        run: |
+          pytest tests/security/ -v --tb=short -m "not rate_limit" \
+            --junitxml=security-test-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-test-results
+          path: security-test-results.xml
+
+  # ── Secret scanning with Gitleaks ─────────────────────────────────────────
+  gitleaks:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for secret scanning
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

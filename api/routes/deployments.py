@@ -7,10 +7,47 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from api.dependencies import get_db, get_current_user
-from api.models import ConfigSnapshot, Deployment
-from api.schemas import DeploymentResponse, RollbackRequest
+from api.models import ConfigSnapshot, Deployment, Device
+from api.schemas import DeploymentResponse, DeploymentRequest, RollbackRequest
 
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
+
+
+@router.post("/", response_model=Dict[str, Any], status_code=202)
+async def trigger_deployment(
+    request_body: DeploymentRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    Trigger a deployment for one or more devices.
+
+    Delegates to the Celery task queue; returns immediately with a batch_id.
+    """
+    from uuid import uuid4
+    from tasks.deployment import validate_and_deploy_task
+
+    for device_id in request_body.device_ids:
+        device = db.query(Device).filter(Device.id == device_id).first()
+        if not device:
+            raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
+
+    batch_id = uuid4()
+    task = validate_and_deploy_task.delay(
+        device_ids=[str(d) for d in request_body.device_ids],
+        config_version=request_body.config_version,
+        strategy=request_body.strategy,
+        batch_id=str(batch_id),
+        user_id=user["user_id"],
+    )
+    return {
+        "batch_id": str(batch_id),
+        "deployment_id": str(batch_id),
+        "task_id": task.id,
+        "status": "QUEUED",
+        "strategy": request_body.strategy,
+        "device_count": len(request_body.device_ids),
+    }
 
 
 @router.get("/", response_model=List[DeploymentResponse])
@@ -179,13 +216,13 @@ async def get_deployment_snapshot(
     query = db.query(ConfigSnapshot).filter(ConfigSnapshot.deployment_id == deployment_id)
     if device_id:
         query = query.filter(ConfigSnapshot.device_id == device_id)
-    snapshots = query.order_by(ConfigSnapshot.created_at).all()
+    snapshots = query.order_by(ConfigSnapshot.applied_at).all()
 
     diff_text: Optional[str] = None
     if device_id and snapshots:
         # Attempt diff if we have both before + after
-        before = next((s for s in snapshots if s.is_before), None)
-        after = next((s for s in snapshots if not s.is_before), None)
+        before = next((s for s in snapshots if s.config_before is not None), None)
+        after = next((s for s in snapshots if s.config_after is not None), None)
         if before and after:
             try:
                 from core.snapshot_manager import SnapshotManager
@@ -200,9 +237,9 @@ async def get_deployment_snapshot(
             {
                 "id": str(s.id),
                 "device_id": str(s.device_id),
-                "is_before": s.is_before,
-                "config_hash": s.config_hash,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "is_before": s.config_before is not None,
+                "config_hash": s.snapshot_hash,
+                "created_at": s.applied_at.isoformat() if s.applied_at else None,
             }
             for s in snapshots
         ],

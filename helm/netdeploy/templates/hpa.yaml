@@ -1,0 +1,55 @@
+{{- if and .Values.api.autoscaling.enabled .Values.api.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "netdeploy.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "netdeploy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "netdeploy.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+{{- end }}
+---
+{{- if and .Values.celery.autoscaling.enabled .Values.celery.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "netdeploy.fullname" . }}-celery
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "netdeploy.labels" . | nindent 4 }}
+    app.kubernetes.io/component: celery-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "netdeploy.fullname" . }}-celery
+  minReplicas: {{ .Values.celery.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.celery.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+{{- end }}

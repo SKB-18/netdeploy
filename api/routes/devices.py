@@ -32,7 +32,7 @@ async def create_device(
     # Check duplicate
     existing = db.query(Device).filter(Device.hostname == request_body.hostname).first()
     if existing:
-        raise HTTPException(status_code=400, detail=f"Device {request_body.hostname} already exists")
+        raise HTTPException(status_code=409, detail=f"Device {request_body.hostname} already exists")
 
     device = Device(**request_body.dict())
     db.add(device)

@@ -1,6 +1,6 @@
 """Configuration validate, deploy, diff, and history endpoints."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -283,6 +283,31 @@ async def config_history(
             "status": c.status,
             "deployed_at": c.deployed_at.isoformat() if c.deployed_at else None,
             "created_by": c.created_by,
+        }
+        for c in configs
+    ]
+
+
+@router.get("/", response_model=List[Dict[str, Any]])
+async def list_configs(
+    device_id: Optional[UUID] = None,
+    limit: int = 50,
+    skip: int = 0,
+    db: Session = Depends(get_db),
+):
+    """List stored configurations, optionally filtered by device_id."""
+    query = db.query(Configuration)
+    if device_id:
+        query = query.filter(Configuration.device_id == device_id)
+    configs = query.order_by(Configuration.created_at.desc()).offset(skip).limit(limit).all()
+    return [
+        {
+            "id": str(c.id),
+            "device_id": str(c.device_id),
+            "version": c.version,
+            "status": c.status,
+            "created_by": c.created_by,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
         }
         for c in configs
     ]

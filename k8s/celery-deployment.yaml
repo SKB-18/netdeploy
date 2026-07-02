@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netdeploy-celery
+  namespace: netdeploy
+  labels:
+    app.kubernetes.io/name: netdeploy
+    app.kubernetes.io/component: celery-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: netdeploy-celery
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: netdeploy-celery
+        app.kubernetes.io/name: netdeploy
+        app.kubernetes.io/component: celery-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9809"     # celery-exporter default port
+    spec:
+      serviceAccountName: netdeploy-api
+      terminationGracePeriodSeconds: 60   # allow in-progress deployments to finish
+      containers:
+        - name: celery-worker
+          image: ghcr.io/your-org/netdeploy-api:latest  # same image, different command
+          imagePullPolicy: Always
+          command:
+            - celery
+            - -A
+            - tasks.celery_app
+            - worker
+            - --loglevel=info
+            - --concurrency=4
+            - --queues=deployments,validation,default
+          envFrom:
+            - configMapRef:
+                name: netdeploy-config
+            - secretRef:
+                name: netdeploy-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          livenessProbe:
+            exec:
+              command:
+                - celery
+                - -A
+                - tasks.celery_app
+                - inspect
+                - ping
+                - -d
+                - "celery@$HOSTNAME"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: git-repo
+              mountPath: /data/netdeploy-configs
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: git-repo
+          persistentVolumeClaim:
+            claimName: netdeploy-git-pvc
+---
+# Celery Beat (scheduler) — single replica to avoid duplicate schedules
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netdeploy-celery-beat
+  namespace: netdeploy
+  labels:
+    app.kubernetes.io/name: netdeploy
+    app.kubernetes.io/component: celery-beat
+spec:
+  replicas: 1   # MUST be 1 — multiple beats cause duplicate tasks
+  selector:
+    matchLabels:
+      app: netdeploy-celery-beat
+  template:
+    metadata:
+      labels:
+        app: netdeploy-celery-beat
+    spec:
+      serviceAccountName: netdeploy-api
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: celery-beat
+          image: ghcr.io/your-org/netdeploy-api:latest
+          command:
+            - celery
+            - -A
+            - tasks.celery_app
+            - beat
+            - --loglevel=info
+            - --scheduler=redbeat.RedBeatScheduler
+          envFrom:
+            - configMapRef:
+                name: netdeploy-config
+            - secretRef:
+                name: netdeploy-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

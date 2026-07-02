@@ -1,0 +1,86 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: netdeploy-ingress
+  namespace: netdeploy
+  labels:
+    app.kubernetes.io/name: netdeploy
+    app.kubernetes.io/component: ingress
+  annotations:
+    # nginx-ingress
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Rate limiting at ingress level (belt-and-suspenders with app-level limiter)
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+
+    # Proxy settings for large config payloads
+    nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+
+    # TLS cert from cert-manager (Let's Encrypt)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+    # Security headers (added by ingress for public traffic)
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-Frame-Options "DENY" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self'; object-src 'none';" always;
+      add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - netdeploy.example.com      # REPLACE with your domain
+        - api.netdeploy.example.com  # REPLACE with your API domain
+      secretName: netdeploy-tls
+  rules:
+    # API
+    - host: api.netdeploy.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: netdeploy-api
+                port:
+                  name: http
+    # Dashboard
+    - host: netdeploy.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: netdeploy-dashboard
+                port:
+                  name: http
+---
+# Internal ingress for monitoring (NOT exposed publicly)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: netdeploy-metrics-ingress
+  namespace: netdeploy
+  annotations:
+    kubernetes.io/ingress.class: "nginx-internal"   # internal class only
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8"  # private only
+spec:
+  rules:
+    - host: netdeploy-metrics.internal.example.com
+      http:
+        paths:
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: netdeploy-api
+                port:
+                  name: http

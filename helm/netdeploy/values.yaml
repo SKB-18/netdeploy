@@ -1,0 +1,170 @@
+# NetDeploy Helm chart default values.
+# Override with: helm install netdeploy ./helm/netdeploy -f my-values.yaml
+
+# ── Global ──────────────────────────────────────────────────────────────────
+global:
+  imageRegistry: "ghcr.io/your-org"   # REPLACE with your registry
+  imagePullSecrets: []
+  storageClass: ""
+
+# ── API ─────────────────────────────────────────────────────────────────────
+api:
+  enabled: true
+  image:
+    repository: netdeploy-api
+    tag: "latest"
+    pullPolicy: Always
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8000
+  env:
+    ENVIRONMENT: "production"
+    LOG_LEVEL: "INFO"
+    RATE_LIMIT_ENABLED: "true"
+    RATE_LIMIT_REQUESTS: "100"
+    RATE_LIMIT_WINDOW: "60"
+  secretName: "netdeploy-secrets"   # pre-existing k8s secret with DATABASE_URL, REDIS_URL, SECRET_KEY
+
+# ── Celery workers ───────────────────────────────────────────────────────────
+celery:
+  enabled: true
+  image:
+    repository: netdeploy-api
+    tag: "latest"
+    pullPolicy: Always
+  replicaCount: 2
+  concurrency: 4
+  queues: "deployments,validation,default"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 6
+
+# ── Celery Beat ──────────────────────────────────────────────────────────────
+celeryBeat:
+  enabled: true
+  # Always exactly 1 replica — never scale
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ── Dashboard (Streamlit) ───────────────────────────────────────────────────
+dashboard:
+  enabled: true
+  image:
+    repository: netdeploy-dashboard
+    tag: "latest"
+    pullPolicy: Always
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8501
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── PostgreSQL (Bitnami subchart) ────────────────────────────────────────────
+postgresql:
+  enabled: true          # set false to use external PostgreSQL
+  auth:
+    username: netdeploy
+    database: netdeploy
+    existingSecret: netdeploy-secrets
+    secretKeys:
+      adminPasswordKey: POSTGRES_PASSWORD
+  primary:
+    persistence:
+      enabled: true
+      size: 50Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+
+# ── Redis (Bitnami subchart) ─────────────────────────────────────────────────
+redis:
+  enabled: true          # set false to use external Redis
+  auth:
+    enabled: true
+    existingSecret: netdeploy-secrets
+    existingSecretPasswordKey: REDIS_PASSWORD
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# ── Ingress ──────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    api: api.netdeploy.example.com         # REPLACE
+    dashboard: netdeploy.example.com       # REPLACE
+  tls:
+    enabled: true
+    secretName: netdeploy-tls
+
+# ── Monitoring ───────────────────────────────────────────────────────────────
+monitoring:
+  serviceMonitor:
+    enabled: true      # requires prometheus-operator CRDs
+    interval: "15s"
+    scrapeTimeout: "10s"
+    path: "/metrics"
+  grafanaDashboard:
+    enabled: true      # creates a ConfigMap Grafana sidecar picks up
+
+# ── Persistence ──────────────────────────────────────────────────────────────
+persistence:
+  gitRepo:
+    enabled: true
+    accessMode: ReadWriteMany
+    size: 10Gi
+    storageClass: ""   # inherits global.storageClass
+
+# ── Network policies ─────────────────────────────────────────────────────────
+networkPolicy:
+  enabled: false   # enable in hardened clusters

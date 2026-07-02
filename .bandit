@@ -1,0 +1,22 @@
+[bandit]
+# Bandit SAST configuration for NetDeploy.
+# Reference: https://bandit.readthedocs.io/en/latest/config.html
+
+# Directories to skip
+exclude_dirs = tests,alembic,venv,.venv,node_modules
+
+# Skip these specific test IDs:
+# B101 — assert statements (we use them in tests intentionally)
+# B105 — hardcoded password string (we have example values in docs/yaml)
+# B106 — hardcoded password as function argument (same)
+# B311 — random module (we use random in load tests, not for crypto)
+skips = B101,B105,B106,B311
+
+# Minimum severity to report (LOW, MEDIUM, HIGH)
+level = MEDIUM
+
+# Minimum confidence to report (LOW, MEDIUM, HIGH)
+confidence = MEDIUM
+
+# Max number of lines to show in output
+max_line_length = 200

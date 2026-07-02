@@ -29,9 +29,13 @@ class SnapshotManager:
     4. On failure: restore_snapshot()  ← roll back to backup
     """
 
-    def __init__(self, db_session, ssh_device=None):
-        self.db = db_session
+    def __init__(self, db_session=None, ssh_device=None, db=None):
+        self.db = db_session if db_session is not None else db
         self.ssh = ssh_device
+
+    def _compute_hash(self, content: str) -> str:
+        """Return SHA-256 hex digest of the given config string."""
+        return hashlib.sha256(content.encode()).hexdigest()
 
     async def save_snapshot(
         self,

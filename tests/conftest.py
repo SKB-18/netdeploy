@@ -45,12 +45,21 @@ def db_session(test_db_engine):
 @pytest.fixture(scope="function")
 def client(db_session):
     """FastAPI test client wired to the test DB session."""
+    from unittest.mock import patch
+
     def override_get_db():
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as c:
-        yield c
+    # Disable rate limiting in unit/integration tests — prevents cross-test
+    # IP count accumulation on the shared "testclient" host address.
+    # The rate_limit marker tests opt back in explicitly.
+    with patch(
+        "api.middleware.rate_limiter._get_settings_limits",
+        return_value={"limit": 100, "window": 60, "enabled": False},
+    ):
+        with TestClient(app) as c:
+            yield c
     app.dependency_overrides.clear()
 
 
