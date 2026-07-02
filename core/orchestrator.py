@@ -77,6 +77,26 @@ class DeploymentOrchestrator:
         # return repo.get_version(device_id, config_version)
         return None
 
+    def _get_deployment_for_batch_device(self, batch_id: str, device_id: str):
+        """Fetch the Deployment row for a device within a batch."""
+        if self.db is None or not batch_id:
+            return None
+        from uuid import UUID as _UUID
+        from api.models import Deployment
+        try:
+            batch_uuid = _UUID(str(batch_id))
+            device_uuid = _UUID(str(device_id))
+        except (ValueError, AttributeError):
+            return None
+        return (
+            self.db.query(Deployment)
+            .filter(
+                Deployment.batch_id == batch_uuid,
+                Deployment.device_id == device_uuid,
+            )
+            .first()
+        )
+
     def _update_deployment_status(
         self,
         deployment_id: UUID,
@@ -111,6 +131,16 @@ class DeploymentOrchestrator:
             deployment.logs = (deployment.logs or "") + logs + "\n"
 
         self.db.commit()
+
+    def _append_deployment_log(self, deployment_id: UUID, line: str):
+        """Append a single line to deployment.logs without changing status."""
+        if self.db is None:
+            return
+        from api.models import Deployment
+        deployment = self.db.query(Deployment).filter(Deployment.id == deployment_id).first()
+        if deployment:
+            deployment.logs = (deployment.logs or "") + line + "\n"
+            self.db.commit()
 
     def _write_audit(
         self,
@@ -192,7 +222,9 @@ class DeploymentOrchestrator:
         canary_id = device_ids[0]
         rest_ids = device_ids[1:]
 
-        canary_result = await self._deploy_to_device(canary_id, config_version, user_id)
+        canary_result = await self._deploy_to_device(
+            canary_id, config_version, user_id, batch_id=batch_id
+        )
         if not canary_result.get("success"):
             return {
                 "status": "FAILED",
@@ -211,7 +243,10 @@ class DeploymentOrchestrator:
             }
 
         # Deploy rest in parallel
-        tasks = [self._deploy_to_device(d, config_version, user_id) for d in rest_ids]
+        tasks = [
+            self._deploy_to_device(d, config_version, user_id, batch_id=batch_id)
+            for d in rest_ids
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         failed = [r for r in results if isinstance(r, Exception) or not r.get("success")]
 
@@ -234,7 +269,9 @@ class DeploymentOrchestrator:
         """
         completed = []
         for device_id in device_ids:
-            result = await self._deploy_to_device(device_id, config_version, user_id)
+            result = await self._deploy_to_device(
+                device_id, config_version, user_id, batch_id=batch_id
+            )
             if not result.get("success"):
                 return {
                     "status": "FAILED",
@@ -267,7 +304,10 @@ class DeploymentOrchestrator:
 
         [CURSOR IMPLEMENTS]
         """
-        tasks = [self._deploy_to_device(d, config_version, user_id) for d in device_ids]
+        tasks = [
+            self._deploy_to_device(d, config_version, user_id, batch_id=batch_id)
+            for d in device_ids
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         failed = []
@@ -292,7 +332,11 @@ class DeploymentOrchestrator:
     # ------------------------------------------------------------------
 
     async def _deploy_to_device(
-        self, device_id: str, config_version: str, user_id: str = "system"
+        self,
+        device_id: str,
+        config_version: str,
+        user_id: str = "system",
+        batch_id: str = None,
     ) -> dict:
         """
         Deploy config to a single device.
@@ -346,41 +390,78 @@ class DeploymentOrchestrator:
         start = datetime.utcnow()
         logger.info("Deploying config to device %s (version=%s)", device_id, config_version)
 
+        # Resolve existing deployment record for this batch+device
+        deployment = self._get_deployment_for_batch_device(batch_id, device_id)
+        deployment_id = deployment.id if deployment else uuid4()
+
+        if deployment:
+            self._update_deployment_status(deployment_id, "IN_PROGRESS")
+
         # Step 1 — Fetch device + desired config
         device = self._get_device(device_id)
         if not device:
+            err = f"Device {device_id} not found"
+            if deployment:
+                self._update_deployment_status(deployment_id, "FAILED", error_message=err)
             return {
                 "success": False,
                 "device_id": device_id,
-                "error": f"Device {device_id} not found",
+                "error": err,
                 "time_taken": (datetime.utcnow() - start).total_seconds(),
             }
 
         desired_config = self._get_desired_config(device_id, config_version)
         if not desired_config:
+            err = f"No config found for device {device_id} at version {config_version}"
+            if deployment:
+                self._update_deployment_status(deployment_id, "FAILED", error_message=err)
             return {
                 "success": False,
                 "device_id": device_id,
-                "error": f"No config found for device {device_id} at version {config_version}",
+                "error": err,
                 "time_taken": (datetime.utcnow() - start).total_seconds(),
             }
 
-        # Create a deployment record and get its ID
-        deployment_id = uuid4()
-        self._update_deployment_status(deployment_id, "IN_PROGRESS")
-
         from core.ssh_handler import SSHDevice
         from core.snapshot_manager import SnapshotManager
+        from core.config import settings
+
+        mgmt_ip = getattr(device, "management_ip", device.hostname)
+        ssh_port = getattr(device, "ssh_port", 22)
+
+        if deployment:
+            self._append_deployment_log(
+                deployment_id,
+                f"Config loaded (version={config_version}). Target: {device.hostname} ({mgmt_ip}:{ssh_port})",
+            )
+
+        if settings.DEPLOY_DRY_RUN:
+            if deployment:
+                self._append_deployment_log(deployment_id, "DRY RUN enabled — skipping SSH connect/apply.")
+                self._update_deployment_status(deployment_id, "SUCCESS")
+            self._write_audit(user_id, "DEPLOY", device_id, {"version": config_version, "dry_run": True})
+            return {
+                "success": True,
+                "device_id": device_id,
+                "deployment_id": str(deployment_id),
+                "error": None,
+                "time_taken": (datetime.utcnow() - start).total_seconds(),
+            }
 
         ssh = SSHDevice(
             hostname=device.hostname,
-            ip=getattr(device, "management_ip", device.hostname),
+            ip=mgmt_ip,
             device_type=device.device_type,
-            port=getattr(device, "ssh_port", 22),
+            port=ssh_port,
+            username=settings.SSH_USERNAME,
+            password=settings.SSH_PASSWORD or None,
+            timeout=settings.SSH_TIMEOUT,
         )
 
         try:
             # Step 2 — SSH connect
+            if deployment:
+                self._append_deployment_log(deployment_id, f"Connecting via SSH as {settings.SSH_USERNAME}...")
             connected = await ssh.connect()
             if not connected:
                 raise RuntimeError(f"SSH connection failed for {device.hostname}")
@@ -421,6 +502,8 @@ class DeploymentOrchestrator:
 
         except Exception as e:
             logger.exception("Deploy failed for device %s: %s", device_id, e)
+            if deployment:
+                self._append_deployment_log(deployment_id, f"ERROR: {e}")
             await self._rollback_device(device_id, user_id)
             self._update_deployment_status(deployment_id, "ROLLBACK", error_message=str(e))
             return {

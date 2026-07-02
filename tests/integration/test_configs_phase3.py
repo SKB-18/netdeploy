@@ -205,7 +205,20 @@ class TestValidateStatusEndpoint:
 # ---------------------------------------------------------------------------
 
 class TestDeployConfigEndpoint:
-    def test_deploy_returns_batch_id(self, client, device_id):
+    def test_deploy_returns_batch_id(self, client, device_id, valid_bgp_state, db_session):
+        from api.models import Configuration
+
+        db_session.add(
+            Configuration(
+                device_id=device_id,
+                version="pending",
+                desired_state=valid_bgp_state,
+                status="PENDING",
+                created_by="test",
+            )
+        )
+        db_session.commit()
+
         payload = {
             "device_ids": [device_id],
             "config_version": "latest",
@@ -238,8 +251,8 @@ class TestDeployConfigEndpoint:
 
         assert r.status_code == 404
 
-    def test_deploy_multiple_devices(self, client, db_session):
-        from api.models import Device
+    def test_deploy_multiple_devices(self, client, db_session, valid_bgp_state):
+        from api.models import Device, Configuration
 
         device_ids = []
         for i in range(3):
@@ -252,6 +265,16 @@ class TestDeployConfigEndpoint:
             db_session.commit()
             db_session.refresh(d)
             device_ids.append(str(d.id))
+            db_session.add(
+                Configuration(
+                    device_id=d.id,
+                    version="pending",
+                    desired_state=valid_bgp_state,
+                    status="PENDING",
+                    created_by="test",
+                )
+            )
+        db_session.commit()
 
         payload = {
             "device_ids": device_ids,
@@ -271,7 +294,34 @@ class TestDeployConfigEndpoint:
         assert data["device_count"] == 3
         assert data["strategy"] == "canary"
 
-    def test_deploy_task_id_in_response(self, client, device_id):
+    def test_deploy_missing_config_returns_422(self, client, device_id):
+        payload = {
+            "device_ids": [device_id],
+            "config_version": "latest",
+            "strategy": "atomic",
+        }
+
+        with patch("tasks.deployment.validate_and_deploy_task"):
+            r = client.post("/api/configs/deploy", json=payload)
+
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert device_id in detail["missing_device_ids"]
+
+    def test_deploy_task_id_in_response(self, client, device_id, valid_bgp_state, db_session):
+        from api.models import Configuration
+
+        db_session.add(
+            Configuration(
+                device_id=device_id,
+                version="pending",
+                desired_state=valid_bgp_state,
+                status="PENDING",
+                created_by="test",
+            )
+        )
+        db_session.commit()
+
         payload = {
             "device_ids": [device_id],
             "config_version": "latest",

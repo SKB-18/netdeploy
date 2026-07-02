@@ -197,7 +197,7 @@ async def deploy_config(
     4. Return batch_id + deployment IDs
     """
     from tasks.deployment import validate_and_deploy_task
-    from datetime import datetime
+    from api.deployment_helpers import create_deployment_records, find_devices_missing_config
 
     # Verify all devices exist
     for device_id in request_body.device_ids:
@@ -205,9 +205,30 @@ async def deploy_config(
         if not device:
             raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
 
-    batch_id = uuid4()
+    missing = find_devices_missing_config(
+        db, request_body.device_ids, request_body.config_version
+    )
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "No configuration found for one or more devices",
+                "missing_device_ids": missing,
+                "config_version": request_body.config_version,
+                "hint": "POST /api/configs to save desired state before deploying",
+            },
+        )
 
-    # Enqueue task (Cursor will wire up full logic)
+    batch_id = uuid4()
+    create_deployment_records(
+        db,
+        request_body.device_ids,
+        batch_id,
+        request_body.config_version,
+        request_body.strategy,
+    )
+
+    # Enqueue task
     task = validate_and_deploy_task.delay(
         device_ids=[str(d) for d in request_body.device_ids],
         config_version=request_body.config_version,

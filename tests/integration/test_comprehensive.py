@@ -160,12 +160,25 @@ class TestScenarioAFullLifecycle:
         assert r.status_code == 201
         device_id = r.json()["id"]
 
-        r = client.post("/api/deployments", json={
-            "device_ids": [device_id],
-            "config_version": "latest",
-            "strategy": "atomic",
-            "dry_run": True,
+        r = client.post("/api/configs/", json={
+            "device_id": device_id,
+            "desired_state": {
+                "bgp": {
+                    "local_asn": 65001,
+                    "router_id": "10.0.0.1",
+                    "neighbors": [],
+                }
+            },
         })
+        assert r.status_code == 201
+
+        with patch("tasks.deployment.validate_and_deploy_task") as mock_deploy:
+            mock_deploy.delay.return_value = MagicMock(id="task-1")
+            r = client.post("/api/deployments", json={
+                "device_ids": [device_id],
+                "config_version": "latest",
+                "strategy": "atomic",
+            })
         assert r.status_code in (200, 201, 202)
         body = r.json()
         dep_id = body.get("deployment_id") or body.get("id") or body.get("batch_id")

@@ -24,10 +24,12 @@ class Settings(BaseSettings):
 
     # SSH defaults
     SSH_USERNAME: str = "admin"
+    SSH_PASSWORD: str = ""
     SSH_TIMEOUT: int = 30
 
     # Deployment
     CANARY_HEALTH_WAIT_SECONDS: int = 300  # 5 min
+    DEPLOY_DRY_RUN: bool = False  # skip real SSH — for local/dev testing
 
     class Config:
         env_file = ".env"

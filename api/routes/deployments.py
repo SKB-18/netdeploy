@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from api.deployment_helpers import create_deployment_records, find_devices_missing_config
 from api.dependencies import get_db, get_current_user
 from api.models import ConfigSnapshot, Deployment, Device
 from api.schemas import DeploymentResponse, DeploymentRequest, RollbackRequest
@@ -32,7 +33,28 @@ async def trigger_deployment(
         if not device:
             raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
 
+    missing = find_devices_missing_config(
+        db, request_body.device_ids, request_body.config_version
+    )
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "No configuration found for one or more devices",
+                "missing_device_ids": missing,
+                "config_version": request_body.config_version,
+                "hint": "POST /api/configs to save desired state before deploying",
+            },
+        )
+
     batch_id = uuid4()
+    deployments = create_deployment_records(
+        db,
+        request_body.device_ids,
+        batch_id,
+        request_body.config_version,
+        request_body.strategy,
+    )
     task = validate_and_deploy_task.delay(
         device_ids=[str(d) for d in request_body.device_ids],
         config_version=request_body.config_version,
@@ -42,11 +64,12 @@ async def trigger_deployment(
     )
     return {
         "batch_id": str(batch_id),
-        "deployment_id": str(batch_id),
+        "deployment_id": str(deployments[0].id) if deployments else str(batch_id),
         "task_id": task.id,
         "status": "QUEUED",
         "strategy": request_body.strategy,
         "device_count": len(request_body.device_ids),
+        "deployment_ids": [str(d.id) for d in deployments],
     }
 
 
