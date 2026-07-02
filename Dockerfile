@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-test.txt ./
+RUN pip install --user --no-cache-dir -r requirements.txt -r requirements-test.txt
 
 # ---- Runtime image ----
 FROM python:3.9-slim

@@ -50,7 +50,7 @@ class DeviceResponse(BaseModel):
     updated_at: datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 class DeviceHealthResponse(BaseModel):
@@ -85,7 +85,7 @@ class ConfigResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 class ValidationResponse(BaseModel):
@@ -133,7 +133,7 @@ class DeploymentResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 class DeploymentBatchResponse(BaseModel):
@@ -165,7 +165,7 @@ class AuditLogResponse(BaseModel):
     ip_address: Optional[str]
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 class AuditLogQuery(BaseModel):

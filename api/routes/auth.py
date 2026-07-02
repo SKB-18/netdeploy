@@ -11,29 +11,32 @@ from api.dependencies import create_access_token, decode_access_token, ACCESS_TO
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 _bearer = HTTPBearer(auto_error=False)
 
 # ---------------------------------------------------------------------------
-# In-memory dev users (replace with DB-backed users in production)
+# In-memory dev users — passwords hashed lazily on first request
 # ---------------------------------------------------------------------------
 
-_DEV_USERS = {
-    "admin": {
-        "user_id": "admin",
-        "email": "admin@netdeploy.local",
-        "role": "admin",
-        # password: "admin"
-        "hashed_password": pwd_context.hash("admin"),
-    },
-    "readonly": {
-        "user_id": "readonly",
-        "email": "readonly@netdeploy.local",
-        "role": "viewer",
-        "hashed_password": pwd_context.hash("readonly"),
-    },
+_RAW_USERS = {
+    "admin":    {"user_id": "admin",    "email": "admin@netdeploy.local",    "role": "admin",  "password": "admin"},
+    "readonly": {"user_id": "readonly", "email": "readonly@netdeploy.local", "role": "viewer", "password": "readonly"},
 }
+_DEV_USERS: dict = {}   # populated on first login attempt
+
+
+def _get_user(username: str):
+    """Return user dict with hashed_password, hashing lazily on first access."""
+    if username not in _DEV_USERS and username in _RAW_USERS:
+        raw = _RAW_USERS[username]
+        _DEV_USERS[username] = {
+            "user_id": raw["user_id"],
+            "email": raw["email"],
+            "role": raw["role"],
+            "hashed_password": pwd_context.hash(raw["password"]),
+        }
+    return _DEV_USERS.get(username)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +63,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     Send as form body: ``username=admin&password=admin``
     (OAuth2 password flow — used by Swagger UI's Authorize button).
     """
-    user = _DEV_USERS.get(form_data.username)
+    user = _get_user(form_data.username)
     if not user or not pwd_context.verify(form_data.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
