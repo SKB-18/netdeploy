@@ -1,12 +1,12 @@
 """Configuration validate, deploy, diff, and history endpoints."""
 
-from typing import List
+from typing import Any, Dict, List
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_db, get_current_user
+from api.dependencies import get_db, get_current_user, get_client_ip
 from api.models import Configuration, Device, AuditLog
 from api.schemas import (
     ConfigRequest,
@@ -21,18 +21,38 @@ from core.validator import ConfigValidator
 router = APIRouter(prefix="/api/configs", tags=["configurations"])
 
 
+def _write_audit(db: Session, user_id: str, action: str, resource_id, details: dict, ip: str = None):
+    """Helper: append an AuditLog row."""
+    from uuid import UUID as PyUUID
+    entry = AuditLog(
+        user_id=user_id,
+        action=action,
+        resource_type="Configuration",
+        resource_id=resource_id if isinstance(resource_id, PyUUID) else uuid4(),
+        details=details,
+        ip_address=ip,
+    )
+    db.add(entry)
+    db.commit()
+
+
 @router.post("/validate", response_model=ValidationResponse)
 async def validate_config(
     request_body: ConfigRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
     """
-    Validate network configuration before deployment.
+    Validate a network configuration before deployment.
 
-    Returns ValidationResponse with valid flag, errors list, warnings list.
-    
-    [CURSOR IMPLEMENTS full validator logic in core/validator.py]
+    - Runs schema validation, BGP/OSPF rule checks, policy conflict detection.
+    - Writes an audit log entry in the background.
+    - Does NOT persist the config or trigger any deployment.
+
+    Response:
+        { "valid": bool, "errors": [...], "warnings": [...] }
     """
     device = db.query(Device).filter(Device.id == request_body.device_id).first()
     if not device:
@@ -40,7 +60,123 @@ async def validate_config(
 
     validator = ConfigValidator()
     result = validator.validate(request_body.desired_state, device_type=device.device_type)
+
+    # Audit: record validation attempt in background so it doesn't slow response
+    background_tasks.add_task(
+        _write_audit,
+        db=db,
+        user_id=user["user_id"],
+        action="VALIDATE",
+        resource_id=request_body.device_id,
+        details={
+            "valid": result.valid,
+            "error_count": len(result.errors),
+            "warning_count": len(result.warnings),
+            "description": request_body.description,
+        },
+        ip=get_client_ip(request),
+    )
+
     return result
+
+
+@router.post("/validate-batch", response_model=List[Dict[str, Any]])
+async def validate_config_batch(
+    items: List[ConfigRequest],
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    Validate configurations for multiple devices in one call.
+
+    Useful for pre-deployment CI checks across an entire device group.
+
+    Request body: list of ConfigRequest objects (same schema as /validate).
+
+    Response: list of per-device results:
+        [{ "device_id": "...", "valid": bool, "errors": [...], "warnings": [...] }, ...]
+
+    [CURSOR IMPLEMENTS async fan-out using validate_batch_task]
+    """
+    results = []
+    validator = ConfigValidator()
+
+    for item in items:
+        device = db.query(Device).filter(Device.id == item.device_id).first()
+        if not device:
+            results.append({
+                "device_id": str(item.device_id),
+                "valid": False,
+                "errors": [f"Device {item.device_id} not found"],
+                "warnings": [],
+            })
+            continue
+
+        result = validator.validate(item.desired_state, device_type=device.device_type)
+        results.append({
+            "device_id": str(item.device_id),
+            "hostname": device.hostname,
+            "valid": result.valid,
+            "errors": result.errors,
+            "warnings": result.warnings,
+        })
+
+    return results
+
+
+@router.post("/validate-async", response_model=Dict[str, Any])
+async def validate_config_async(
+    request_body: ConfigRequest,
+    run_preflight: bool = False,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    Enqueue a validation task and return immediately with a task_id.
+
+    Poll GET /api/configs/validate-status/{task_id} for results.
+
+    Use this when run_preflight=True (ping checks add latency) or when
+    validating very large configs.
+
+    [CURSOR IMPLEMENTS polling endpoint + Celery task wiring]
+    """
+    device = db.query(Device).filter(Device.id == request_body.device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    from tasks.validation import validate_config_task
+    task = validate_config_task.delay(
+        device_id=str(request_body.device_id),
+        desired_state=request_body.desired_state,
+        device_type=device.device_type,
+        run_preflight=run_preflight,
+        user_id=user["user_id"],
+    )
+    return {"task_id": task.id, "status": "PENDING", "device_id": str(request_body.device_id)}
+
+
+@router.get("/validate-status/{task_id}", response_model=Dict[str, Any])
+async def validate_status(task_id: str):
+    """
+    Poll result of an async validation task.
+
+    Returns task state (PENDING / SUCCESS / FAILURE) and result when done.
+
+    [CURSOR IMPLEMENTS using Celery AsyncResult]
+    """
+    from celery.result import AsyncResult
+    from tasks.celery_app import celery_app
+
+    result = AsyncResult(task_id, app=celery_app)
+    if result.state == "PENDING":
+        return {"task_id": task_id, "status": "PENDING"}
+    elif result.state == "SUCCESS":
+        return {"task_id": task_id, "status": "SUCCESS", "result": result.result}
+    elif result.state == "FAILURE":
+        return {"task_id": task_id, "status": "FAILURE", "error": str(result.result)}
+    return {"task_id": task_id, "status": result.state}
 
 
 @router.post("/deploy", response_model=dict)
