@@ -71,6 +71,12 @@ class TestBGPValidationRule:
         errs = BGPValidationRule.validate_neighbor_ip("0.0.0.0")
         assert len(errs) > 0
 
+    def test_invalid_neighbor_reserved(self):
+        # 240.0.0.0/4 is reserved (RFC 1112)
+        errs = BGPValidationRule.validate_neighbor_ip("240.0.0.1")
+        assert len(errs) > 0
+        assert any("reserved" in e.lower() for e in errs)
+
     def test_ibgp_warning(self):
         warnings = BGPValidationRule.validate_local_remote_asn(65001, 65001)
         assert len(warnings) > 0
@@ -91,6 +97,12 @@ class TestBGPValidationRule:
     def test_invalid_router_id_not_ip(self):
         errs = BGPValidationRule.validate_router_id("not-valid")
         assert len(errs) > 0
+
+    def test_router_id_in_127_range_flagged(self):
+        """127.x.x.x is loopback range — should use a loopback interface address instead."""
+        errs = BGPValidationRule.validate_router_id("127.0.0.1")
+        assert len(errs) > 0
+        assert any("loopback" in e.lower() or "127" in e for e in errs)
 
     def test_valid_timers(self):
         errs = BGPValidationRule.validate_timers(keepalive=60, hold_time=180)
@@ -165,6 +177,17 @@ class TestCIDRValidationRule:
     def test_loopback_prefix_flagged(self):
         errs = CIDRValidationRule.validate_prefix("127.0.0.0/8")
         assert len(errs) > 0
+
+    def test_link_local_prefix_flagged(self):
+        errs = CIDRValidationRule.validate_prefix("169.254.0.0/16")
+        assert len(errs) > 0
+        assert any("link-local" in e.lower() or "169.254" in e for e in errs)
+
+    def test_valid_private_prefix(self):
+        assert CIDRValidationRule.validate_prefix("192.168.0.0/24") == []
+
+    def test_valid_default_route(self):
+        assert CIDRValidationRule.validate_prefix("0.0.0.0/0") == []
 
     def test_prefix_list_collects_all_errors(self):
         errs = CIDRValidationRule.validate_prefix_list(["bad1", "bad2", "10.0.0.0/8"])
