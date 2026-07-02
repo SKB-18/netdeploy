@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: netdeploy-api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://netdeploy:password@db:5432/netdeploy
+      TEST_DATABASE_URL: postgresql://netdeploy:password@db:5432/netdeploy_test
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      LOG_LEVEL: info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - config_repo:/app/config_repo
+    command: >
+      sh -c "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload"
+    restart: unless-stopped
+
+  celery:
+    build: .
+    container_name: netdeploy-celery
+    command: celery -A tasks.celery_app worker --loglevel=info --concurrency=4 -Q deploy,rollback,sync,celery
+    environment:
+      DATABASE_URL: postgresql://netdeploy:password@db:5432/netdeploy
+      TEST_DATABASE_URL: postgresql://netdeploy:password@db:5432/netdeploy_test
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - config_repo:/app/config_repo
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    container_name: netdeploy-dashboard
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      NETDEPLOY_API_URL: http://api:8000
+    depends_on:
+      - api
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    container_name: netdeploy-postgres
+    environment:
+      POSTGRES_USER: netdeploy
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: netdeploy
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netdeploy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: netdeploy-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: netdeploy-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: netdeploy-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  config_repo:

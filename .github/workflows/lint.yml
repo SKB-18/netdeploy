@@ -1,0 +1,32 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install lint tools
+        run: pip install black flake8 mypy isort
+
+      - name: Black format check
+        run: black --check --line-length 100 api core tasks tests
+
+      - name: isort check
+        run: isort --check-only --profile black api core tasks tests
+
+      - name: Flake8
+        run: flake8 api core tasks tests --max-line-length=100 --count --statistics
+
+      - name: Type check
+        run: mypy api core tasks --ignore-missing-imports --no-strict-optional

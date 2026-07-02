@@ -1,0 +1,43 @@
+# Web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Database
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.12.1
+
+# Task queue
+celery==5.3.4
+redis==5.0.1
+
+# Network automation
+netmiko==4.3.0
+paramiko==3.3.1
+nornir==3.3.0
+
+# Git
+gitpython==3.1.40
+
+# Validation
+pydantic==1.10.13
+
+# Auth (JWT)
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Dashboard
+streamlit==1.28.2
+plotly==5.18.0
+
+# Monitoring
+prometheus-fastapi-instrumentator==6.1.0
+
+# YAML
+pyyaml==6.0.1
+
+# Utilities
+python-dotenv==1.0.0
+httpx==0.25.2
+requests==2.31.0
