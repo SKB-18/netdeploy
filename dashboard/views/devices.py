@@ -116,17 +116,7 @@ def _render_devices_table(devices: list):
         })
 
     df = pd.DataFrame(rows)
-
-    def _highlight_type(row):
-        device_type = row.get("Type", "")
-        if "xr" in device_type or "ios" in device_type:
-            return ["background-color: #e8f4ff"] * len(row)
-        if "junos" in device_type:
-            return ["background-color: #fff8e8"] * len(row)
-        return [""] * len(row)
-
-    styled = df.style.apply(_highlight_type, axis=1)
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def _render_device_actions(client: NetDeployClient, devices: list):

@@ -33,6 +33,7 @@ def render(client: NetDeployClient):
     devices = client.list_devices()
 
     active = [d for d in deployments if d.get("status") == "IN_PROGRESS"]
+    queued = [d for d in deployments if d.get("status") == "QUEUED"]
     successful = [d for d in deployments if d.get("status") == "SUCCESS"]
     success_rate = (
         f"{len(successful) / len(deployments) * 100:.0f}%"
@@ -41,21 +42,21 @@ def render(client: NetDeployClient):
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Active", len(active))
+        st.metric("In Progress", len(active))
     with col2:
-        st.metric("Success Rate", success_rate)
+        st.metric("Queued", len(queued))
     with col3:
-        st.metric("Total Deployments", len(deployments))
+        st.metric("Success Rate", success_rate)
     with col4:
-        st.metric("Devices Managed", len(devices))
+        st.metric("Total Deployments", len(deployments))
 
     st.divider()
 
     # ------------------------------------------------------------------
     # Section 2: Trigger new deployment
     # ------------------------------------------------------------------
-    with st.expander("➕ Trigger New Deployment"):
-        _render_trigger_form(client, devices)
+    st.subheader("➕ Trigger New Deployment")
+    _render_trigger_form(client, devices)
 
     st.divider()
 
@@ -66,7 +67,7 @@ def render(client: NetDeployClient):
 
     col_refresh, col_limit = st.columns([3, 1])
     with col_refresh:
-        auto_refresh = st.checkbox("Auto-refresh every 5s", value=False)
+        auto_refresh = st.checkbox("Auto-refresh every 5s", value=True)
     with col_limit:
         limit = st.selectbox("Show", [20, 50, 100], index=0, label_visibility="collapsed")
 
@@ -91,6 +92,26 @@ def render(client: NetDeployClient):
     if auto_refresh:
         time.sleep(5)
         st.rerun()
+
+
+def _default_desired_state(device: dict, bgp_asn: int, ospf_area: str) -> dict:
+    """Build a minimal valid BGP+OSPF config from device inventory fields."""
+    router_id = device.get("management_ip") or "10.0.0.1"
+    parts = router_id.rsplit(".", 1)
+    network = f"{parts[0]}.0/24" if len(parts) == 2 else "10.0.0.0/24"
+    return {
+        "bgp": {
+            "local_asn": int(bgp_asn),
+            "router_id": router_id,
+            "neighbors": [],
+            "route_policies": [],
+        },
+        "ospf": {
+            "process_id": 1,
+            "router_id": router_id,
+            "areas": [{"area_id": ospf_area, "networks": [network]}],
+        },
+    }
 
 
 def _render_trigger_form(client: NetDeployClient, devices: list):
@@ -118,6 +139,29 @@ def _render_trigger_form(client: NetDeployClient, devices: list):
         return
 
     selected_labels = st.multiselect("Devices", list(device_options.keys()))
+    devices_by_id = {d.get("id"): d for d in devices}
+
+    if selected_labels:
+        missing_config = []
+        for label in selected_labels:
+            device_id = device_options[label]
+            if not client.get_config_history(device_id, limit=1):
+                missing_config.append(label)
+        if missing_config:
+            st.warning(
+                "No saved configuration yet for: "
+                + ", ".join(f"**{name}**" for name in missing_config)
+                + ". Fill in the fields below — a config will be created automatically when you deploy."
+            )
+
+    st.markdown("**Initial configuration** *(required for new devices)*")
+    default_asn = 65001
+    if selected_labels:
+        first_device = devices_by_id.get(device_options[selected_labels[0]], {})
+        default_asn = first_device.get("bgp_asn") or 65001
+    bgp_asn = st.number_input("BGP local ASN", min_value=1, max_value=4294967295, value=int(default_asn))
+    ospf_area = st.text_input("OSPF area ID", value="0.0.0.0")
+
     strategy = st.radio(
         "Strategy",
         ["atomic", "rolling", "canary"],
@@ -130,16 +174,41 @@ def _render_trigger_form(client: NetDeployClient, devices: list):
     with col_submit:
         submitted = st.button("🚀 Deploy", type="primary", disabled=not selected_labels)
     with col_hint:
-        st.caption("Select at least one device to enable deployment.")
+        if not selected_labels:
+            st.caption("Select at least one device to enable deployment.")
 
     if submitted and selected_labels:
-        # [CURSOR IMPLEMENTS actual call + success/error feedback]
         device_ids = [device_options[label] for label in selected_labels]
-        batch_id = client.trigger_deployment(device_ids, config_version, strategy)
-        if batch_id:
+
+        for label in selected_labels:
+            device_id = device_options[label]
+            if client.get_config_history(device_id, limit=1):
+                continue
+            device = devices_by_id.get(device_id, {})
+            desired_state = _default_desired_state(device, bgp_asn, ospf_area)
+            created = client.create_config(
+                device_id,
+                desired_state,
+                description=f"Dashboard config for {device.get('hostname', device_id)}",
+            )
+            if not created:
+                st.error(f"Could not save configuration for **{label}**. Fix validation errors and try again.")
+                return
+
+        result = client.trigger_deployment_detailed(device_ids, config_version, strategy)
+        if result.get("success"):
+            batch_id = result.get("batch_id")
             st.success(f"Deployment queued! Batch ID: `{batch_id}`")
+            st.info("The worker usually finishes in a few seconds. Refresh the table below for status.")
         else:
-            st.error("Failed to trigger deployment. Check API logs.")
+            detail = result.get("detail")
+            if isinstance(detail, dict):
+                st.error(detail.get("message", "Deployment rejected"))
+                missing = detail.get("missing_device_ids") or []
+                if missing:
+                    st.caption(f"Missing config for device(s): {', '.join(missing)}")
+            else:
+                st.error(f"Failed to trigger deployment: {detail or 'Check API logs.'}")
 
 
 def _render_deployments_table(deployments: list):
@@ -159,19 +228,7 @@ def _render_deployments_table(deployments: list):
         })
 
     df = pd.DataFrame(rows)
-
-    def _row_color(row):
-        status = row["Status"]
-        if "❌" in status:
-            return ["background-color: #ffd6d6"] * len(row)
-        if "✅" in status:
-            return ["background-color: #d6f5d6"] * len(row)
-        if "🔄" in status:
-            return ["background-color: #d6e8ff"] * len(row)
-        return [""] * len(row)
-
-    styled = df.style.apply(_row_color, axis=1)
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def _render_deployment_detail(client: NetDeployClient, deployments: list):
@@ -214,7 +271,13 @@ def _render_deployment_detail(client: NetDeployClient, deployments: list):
 
     with col_actions:
         st.write("")
-        can_rollback = detail.get("status") in ("SUCCESS", "FAILED")
+        status = detail.get("status", "")
+        # Rollback only applies when config was actually applied (SUCCESS)
+        can_rollback = status == "SUCCESS"
+        if status == "FAILED":
+            st.caption("Nothing to roll back — failed before config was applied.")
+        elif status == "QUEUED":
+            st.caption("Still processing — wait a few seconds.")
         if st.button("↩️ Rollback", disabled=not can_rollback, type="secondary"):
             # [CURSOR IMPLEMENTS rollback call]
             result = client.rollback_deployment(selected_id)
@@ -230,6 +293,8 @@ def _render_deployment_detail(client: NetDeployClient, deployments: list):
         if logs_data and logs_data.get("logs"):
             log_text = "\n".join(logs_data["logs"])
             st.code(log_text, language="text")
+        elif detail.get("error_message"):
+            st.code(detail["error_message"], language="text")
         else:
             st.caption("No logs available yet.")
 

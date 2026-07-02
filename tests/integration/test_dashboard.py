@@ -129,7 +129,7 @@ class TestPageRenderNocrash:
 
     def test_deployments_table_renders(self, mock_client):
         """_render_deployments_table should not raise with valid data."""
-        from dashboard.pages.deployments import _render_deployments_table
+        from dashboard.views.deployments import _render_deployments_table
         import streamlit as st
 
         deployments = mock_client.list_deployments()
@@ -152,7 +152,7 @@ class TestPageRenderNocrash:
 
     def test_devices_table_renders(self, mock_client):
         """_render_devices_table should build a DataFrame without raising."""
-        from dashboard.pages.devices import _render_devices_table
+        from dashboard.views.devices import _render_devices_table
         import pandas as pd
 
         devices = mock_client.list_devices()

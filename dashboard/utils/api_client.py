@@ -221,6 +221,16 @@ class NetDeployClient:
         strategy: str = "atomic",
     ) -> Optional[str]:
         """POST /api/configs/deploy → returns batch_id or None on error."""
+        result = self.trigger_deployment_detailed(device_ids, config_version, strategy)
+        return result.get("batch_id") if result.get("success") else None
+
+    def trigger_deployment_detailed(
+        self,
+        device_ids: List[str],
+        config_version: str,
+        strategy: str = "atomic",
+    ) -> dict:
+        """POST /api/configs/deploy → {success, batch_id?, detail?}."""
         try:
             r = self.session.post(
                 f"{self.api_url}/api/configs/deploy",
@@ -231,23 +241,28 @@ class NetDeployClient:
                 },
                 timeout=self.timeout,
             )
-            r.raise_for_status()
-            return r.json().get("batch_id")
+            if r.status_code >= 400:
+                try:
+                    detail = r.json().get("detail", r.text)
+                except Exception:
+                    detail = r.text
+                logger.error("trigger_deployment failed (%s): %s", r.status_code, detail)
+                return {"success": False, "status_code": r.status_code, "detail": detail}
+            data = r.json()
+            return {"success": True, "batch_id": data.get("batch_id"), "data": data}
         except Exception as e:
             logger.error("trigger_deployment failed: %s", e)
-            return None
+            return {"success": False, "detail": str(e)}
 
     def rollback_deployment(self, deployment_id: str, reason: str = "manual") -> Optional[str]:
         """
         POST /api/deployments/{deployment_id}/rollback
         → task_id string or None on error.
-
-        [CURSOR IMPLEMENTS]
         """
         try:
             r = self.session.post(
                 f"{self.api_url}/api/deployments/{deployment_id}/rollback",
-                json={"reason": reason},
+                json={"deployment_id": deployment_id, "reason": reason},
                 timeout=self.timeout,
             )
             r.raise_for_status()
@@ -276,6 +291,29 @@ class NetDeployClient:
     # ------------------------------------------------------------------
     # Configurations
     # ------------------------------------------------------------------
+
+    def create_config(
+        self,
+        device_id: str,
+        desired_state: dict,
+        description: str = "Configuration update",
+    ) -> Optional[dict]:
+        """POST /api/configs/ → store desired configuration for a device."""
+        try:
+            r = self.session.post(
+                f"{self.api_url}/api/configs/",
+                json={
+                    "device_id": device_id,
+                    "desired_state": desired_state,
+                    "description": description,
+                },
+                timeout=self.timeout,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            logger.error("create_config failed: %s", e)
+            return None
 
     def validate_config(self, device_id: str, desired_state: dict) -> Optional[dict]:
         """

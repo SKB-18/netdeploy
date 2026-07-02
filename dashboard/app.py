@@ -10,9 +10,9 @@ st.set_page_config(
 )
 
 from dashboard.utils.api_client import NetDeployClient
-from dashboard.pages import deployments as deployments_page
-from dashboard.pages import devices as devices_page
-from dashboard.pages import audit_log as audit_log_page
+from dashboard.views import deployments as deployments_page
+from dashboard.views import devices as devices_page
+from dashboard.views import audit_log as audit_log_page
 import os
 
 API_URL = os.getenv("NETDEPLOY_API_URL", "http://localhost:8000")
